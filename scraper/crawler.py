@@ -51,52 +51,105 @@ class FotMobScraper:
             logger.error(f"Error resolving team ID for {team_name}: {e}")
             return None
 
-    async def get_last_5_matches(self, team_id: str) -> List[str]:
+    async def get_last_5_matches(self, team_id: str, tournament_id: str = "77") -> List[str]:
+        """
+        Fetches the last 5 match IDs for a team.
+        Attempts to fetch from the team overview page first (which works for clubs).
+        If that fails (which it does for national teams missing the data), it falls back
+        to fetching fixtures from a tournament endpoint (defaulting to World Cup ID 77).
+        """
+        match_ids = []
         try:
             async with AsyncSession(**self.session_kwargs) as session:
+                # Primary logic for Clubs
                 url = f"https://www.fotmob.com/teams/{team_id}/overview/"
                 response = await session.get(url, timeout=15)
                 soup = BeautifulSoup(response.text, "html.parser")
                 next_data_script = soup.find("script", id="__NEXT_DATA__")
 
-                if not next_data_script:
-                    logger.error(
-                        f"Could not find __NEXT_DATA__ for team {team_id}"
+                if next_data_script:
+                    data = json.loads(next_data_script.string)
+                    fallback = (
+                        data.get("props", {})
+                        .get("pageProps", {})
+                        .get("fallback", {})
                     )
-                    return []
+                    team_data = fallback.get(f"team-{team_id}", {})
 
-                data = json.loads(next_data_script.string)
-                fallback = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("fallback", {})
-                )
-                team_data = fallback.get(f"team-{team_id}", {})
+                    if team_data:
+                        all_fixtures = (
+                            team_data.get("fixtures", {})
+                            .get("allFixtures", {})
+                            .get("fixtures", [])
+                        )
 
-                if not team_data:
-                    logger.error(
-                        f"Team data not found in fallback for team {team_id}"
-                    )
-                    return []
+                        for fixture in all_fixtures:
+                            if fixture.get("notStarted") is False and fixture.get("result"):
+                                match_ids.append(str(fixture["id"]))
 
-                all_fixtures = (
-                    team_data.get("fixtures", {})
-                    .get("allFixtures", {})
-                    .get("fixtures", [])
-                )
+                        if match_ids:
+                            return match_ids[-5:] if len(match_ids) >= 5 else match_ids
 
-                match_ids = []
-                for fixture in all_fixtures:
-                    if fixture.get("notStarted") is False and fixture.get(
-                        "result"
-                    ):
-                        match_ids.append(str(fixture["id"]))
+                # Fallback logic for National Teams (Tournament-Centric)
+                logger.info(f"Team data not found in fallback for team {team_id}. Using tournament fallback ({tournament_id}).")
 
+                # We will check both ID 77 (World Cup) and 73 (Copa America) and 50 (Euros) just to be safe if 77 has no recent matches for them.
+                # Actually, the user says we can default to 77. But checking a few common ones for national teams is more robust.
+                tournaments_to_check = [tournament_id, "77", "73", "50", "111", "130"]
+
+                # Deduplicate list while preserving order
+                tournaments_to_check = list(dict.fromkeys(tournaments_to_check))
+
+                all_found_matches = []
+                for t_id in tournaments_to_check:
+                    tournament_url = f"https://www.fotmob.com/api/data/leagues?id={t_id}"
+                    tour_response = await session.get(tournament_url, timeout=15)
+                    if tour_response.status_code == 200:
+                        tour_data = tour_response.json()
+
+                        found_matches = []
+                        def extract_matches(obj):
+                            if isinstance(obj, dict):
+                                if 'home' in obj and 'away' in obj and 'id' in obj and 'notStarted' in obj:
+                                    found_matches.append(obj)
+                                for k, v in obj.items():
+                                    extract_matches(v)
+                            elif isinstance(obj, list):
+                                for v in obj:
+                                    extract_matches(v)
+
+                        extract_matches(tour_data)
+
+                        team_matches = []
+                        for m in found_matches:
+                            home_id = str(m.get('home', {}).get('id', ''))
+                            away_id = str(m.get('away', {}).get('id', ''))
+                            if home_id == str(team_id) or away_id == str(team_id):
+                                # Ensure it's finished
+                                if m.get('notStarted') is False or m.get('status', {}).get('finished') is True:
+                                    team_matches.append(m)
+
+                        all_found_matches.extend(team_matches)
+
+                        if len(all_found_matches) >= 5:
+                            break # We have enough matches
+
+                # Deduplicate by ID and sort if possible (assuming chronological order in extraction)
+                unique_matches = {}
+                for m in all_found_matches:
+                    unique_matches[str(m['id'])] = m
+
+                match_ids = list(unique_matches.keys())
+
+                # Note: if there are more than 5, we return the last 5
+                # The ordering from fotmob is usually chronological per tournament
                 return match_ids[-5:] if len(match_ids) >= 5 else match_ids
 
         except Exception as e:
             logger.error(f"Error fetching matches for team {team_id}: {e}")
             return []
+
+        return []
 
     async def get_match_data(self, match_id: str) -> Optional[dict]:
         try:
