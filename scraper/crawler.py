@@ -26,26 +26,24 @@ class FotMobScraper:
             async with AsyncSession(**self.session_kwargs) as session:
                 url = f"https://search.yahoo.com/search?p=site:fotmob.com/teams+overview+{team_name.replace(' ', '+')}"
                 response = await session.get(url, timeout=15)
-                match = re.search(
-                    r"RU=https%3a%2f%2fwww\.fotmob\.com%2fteams%2f(\d+)",
-                    response.text,
-                )
-                if match:
-                    team_id = match.group(1)
-                    logger.info(f"Resolved '{team_name}' to team ID {team_id}")
-                    return team_id
 
-                match = re.search(
-                    r"fotmob\.com(?:%2F|/)teams(?:%2F|/)(\d+)", response.text
-                )
-                if match:
-                    team_id = match.group(1)
-                    logger.info(
-                        f"Resolved '{team_name}' to team ID {team_id} (fallback)"
-                    )
-                    return team_id
+                # Find all possible team IDs returned by the search engine
+                matches = re.findall(r"RU=https%3a%2f%2fwww\.fotmob\.com%2fteams%2f(\d+)", response.text)
 
-                logger.warning(f"Could not resolve team ID for '{team_name}'")
+                if not matches:
+                    matches = re.findall(r"fotmob\.com(?:%2F|/)teams(?:%2F|/)(\d+)", response.text)
+
+                # Verify which ID is valid (sometimes Yahoo returns old/undefined IDs like 6301 or 5529 first)
+                for team_id in matches:
+                    verify_url = f"https://www.fotmob.com/teams/{team_id}/overview"
+                    verify_resp = await session.get(verify_url, timeout=15)
+                    title_match = re.search(r'<title>(.*?)</title>', verify_resp.text)
+
+                    if title_match and "undefined" not in title_match.group(1).lower():
+                        logger.info(f"Resolved '{team_name}' to valid team ID {team_id}")
+                        return team_id
+
+                logger.warning(f"Could not resolve a valid team ID for '{team_name}'")
                 return None
         except Exception as e:
             logger.error(f"Error resolving team ID for {team_name}: {e}")
