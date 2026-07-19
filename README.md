@@ -24,13 +24,13 @@ Modern football data platforms heavily restrict access to their APIs. The object
 
 ## Usage
 
-The script is executed via the command line. You must provide the former match URLs for the two teams you wish to simulate, along with their names.
+The engine features an interactive dashboard powered by Streamlit. You simply need to provide the names of the two teams you wish to simulate.
 
 **Example Command:**
 
-    python TDI-Engine.py --match1 "https://www.fotmob.com/matches/team-1-url" --match2 "https://www.fotmob.com/matches/team-2-url" --team1 "France" --team2 "Spain"
+    streamlit run app.py
 
-Upon successful execution, the script will process the data and output a `prediction_dashboard.png` file in the root directory.
+Upon execution, a web-based dashboard will launch, allowing you to fetch real data for your selected teams, visualize match momentum, and view probabilities and key metrics.
 
 ## Architecture Highlights
 
